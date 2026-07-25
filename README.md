@@ -1,61 +1,27 @@
 # watchdog
 
-VPS health monitor with Telegram alerts. Checks systemd timers, failed services, disk usage, Syncthing peers, and Claude Code auth status.
+A shell health checker that records system conditions and emits remote alerts.
 
-Built by [Victor Valentine Romo](https://victorvalentineromo.com) at [Scale With Search](https://scalewithsearch.com).
+## Principle cluster
 
-## What It Checks
+This repository demonstrates **P10 (production means persistence, bounded autonomy, and observability)** because it reads a configured check list, reports missing entries, and evaluates disk usage.
 
-| Check | Alert When |
-|-------|-----------|
-| Systemd timers | Expected timer missing from `list-timers` |
-| Failed services | Any `--user` service in failed state |
-| Disk usage | Root partition exceeds threshold (default 80%) |
-| Syncthing peer | No connected peers for >1 hour |
-| Claude Code auth | Token expired or `claude -p` failing |
+[Read the principles](https://victorvalentineromo.com/principles).
 
-## Install
+## Worked example
 
 ```bash
-curl -o ~/.local/bin/watchdog https://raw.githubusercontent.com/b2bvic/watchdog/main/watchdog
-chmod +x ~/.local/bin/watchdog
+WATCHDOG_TIMERS=~/.config/watchdog/timers.txt ./watchdog
 ```
 
-## Usage
-
-```bash
-# Run once
-watchdog
-
-# Run hourly via cron
-0 * * * * ~/.local/bin/watchdog
-```
-
-## Configuration
-
-### Environment variables
-
-```bash
-export TELEGRAM_BOT_TOKEN="your-bot-token"
-export TELEGRAM_CHAT_ID="your-chat-id"
-export WATCHDOG_DISK_THRESHOLD=80          # Optional, default 80%
-export SYNCTHING_API_KEY="your-api-key"    # Optional, enables sync check
-```
-
-Or source from `~/.env.automation`.
-
-### Timer watchlist
-
-Create `~/.config/watchdog/timers.txt` with one timer name per line:
-
-```
-my-backup
-daily-report
-sync-service
-```
-
-Lines starting with `#` are ignored. If no file exists, timer check is skipped.
+The expected-timer list comes from `WATCHDOG_TIMERS` (default `~/.config/watchdog/timers.txt`). The script requires the two Telegram credential variables it names in its header and posts alerts through them.
 
 ## License
 
-MIT
+MIT.
+
+## How this was built
+
+This 2026 README refit used model assistance.
+
+No claim is made about how the underlying code was authored or reviewed.
