@@ -1,30 +1,25 @@
 # tg-notify
 
-Self-healing Telegram notification sender. Tries Markdown, falls back to plain text. Logs failures instead of swallowing them.
+A shell notification sender with a plain-text retry path.
 
-Built by [Victor Valentine Romo](https://victorvalentineromo.com) at [Scale With Search](https://scalewithsearch.com).
+## Principle cluster
 
-## Usage
+This repository demonstrates **P10 (production means persistence, bounded autonomy, and observability)** because it encodes message text as JSON and retries without formatting when the first response is rejected.
 
-```bash
-export TELEGRAM_BOT_TOKEN="your-bot-token"
-tg-notify 123456789 "Deploy complete. *All services green.*"
-```
+[Read the principles](https://victorvalentineromo.com/principles).
 
-If Telegram rejects the Markdown (unmatched `*`, `_`, etc.), it automatically retries as plain text. Both attempts logged if failed.
-
-## Install
+## Worked example
 
 ```bash
-curl -o ~/.local/bin/tg-notify https://raw.githubusercontent.com/b2bvic/tg-notify/main/tg-notify
-chmod +x ~/.local/bin/tg-notify
+./tg-notify "recipient" "Build complete."
 ```
-
-## Token Sources
-
-1. `TELEGRAM_BOT_TOKEN` environment variable
-2. `~/.env.automation` file (auto-sourced if env var missing)
 
 ## License
 
-MIT
+MIT.
+
+## How this was built
+
+This 2026 README refit used model assistance.
+
+No claim is made about how the underlying code was authored or reviewed.
