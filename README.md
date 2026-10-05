@@ -1,6 +1,6 @@
-# MacOS iMessage history reader: imessage-pull
+# macOS iMessage history reader: imessage-pull
 
-Imessage-pull reads local message records for macOS users. Use a contact lookup to inspect recent Messages history without exporting the entire database.
+`imessage-pull` reads local message records for macOS users. Use a contact lookup to inspect recent Messages history without exporting the entire database.
 
 [Project page](https://scalewithsearch.com/code/imessage-pull)
 
@@ -22,6 +22,16 @@ python3 -m venv .venv
 ```
 
 These checks use synthetic input and perform no live sends.
+
+## Usage
+
+Give the terminal Full Disk Access before a run.
+
+```bash
+./imessage-pull 5551234567 20
+```
+
+The first argument is a substring of the chat identifier, such as a phone number or an email address. The second argument is the message count. The default count is 20.
 
 ## How it works
 
