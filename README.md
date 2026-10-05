@@ -1,6 +1,6 @@
 # X bookmarks to Markdown importer: twitter-bookmarks
 
-Twitter-bookmarks imports saved X posts for researchers and content teams. Use classified Markdown records to retain social research in files you control.
+`twitter-bookmarks` imports saved X posts for researchers and content teams. Use classified Markdown records to retain social research in files you control.
 
 [Project page](https://scalewithsearch.com/code/twitter-bookmarks)
 
