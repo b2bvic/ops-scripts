@@ -18,10 +18,17 @@ if [ ! -f "$DB" ]; then
   exit 1
 fi
 
-python3 << PYEOF
+python3 - "$DB" "$PHONE" "$LIMIT" <<'PYEOF'
 import sqlite3, re, sys
+from pathlib import Path
 
-db = sqlite3.connect("$DB")
+path, phone, limit_text = sys.argv[1:]
+if not limit_text.isdecimal() or int(limit_text) < 1:
+    print("Message limit must be a positive integer", file=sys.stderr)
+    sys.exit(1)
+limit = int(limit_text)
+contact = phone.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+db = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
 cursor = db.cursor()
 cursor.execute("""
     SELECT m.text, m.attributedBody,
@@ -30,14 +37,14 @@ cursor.execute("""
     FROM message m
     JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
     JOIN chat c ON cmj.chat_id = c.ROWID
-    WHERE c.chat_identifier LIKE '%${PHONE}%'
+    WHERE c.chat_identifier LIKE ? ESCAPE '\\'
     ORDER BY m.date DESC
-    LIMIT ${LIMIT}
-""")
+    LIMIT ?
+""", (f"%{contact}%", limit))
 
 rows = cursor.fetchall()
 if not rows:
-    print("No messages found for ${PHONE}")
+    print(f"No messages found for {phone}")
     sys.exit(0)
 
 messages = []
@@ -84,7 +91,7 @@ for text, abody, date, is_from_me in rows:
 
 # Print oldest first
 messages.reverse()
-print(f"--- Messages with ${PHONE} (last ${LIMIT}) ---\n")
+print(f"--- Messages with {phone} (last {limit}) ---\n")
 for date, sender, msg in messages:
     print(f"{date} | {sender}: {msg}")
 
