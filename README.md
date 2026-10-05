@@ -1,35 +1,54 @@
-# twitter-bookmarks
+# X bookmarks to Markdown importer: twitter-bookmarks
 
-A command-line importer for collecting and classifying saved posts.
+Twitter-bookmarks imports saved X posts for researchers and content teams. Use classified Markdown records to retain social research in files you control.
 
-## Principle cluster
+[Project page](https://scalewithsearch.com/code/twitter-bookmarks)
 
-This repository demonstrates **P02 (own the memory plane)** and **P04 (synthesis starts from sources)** because it fetches bookmark records, compares them with seen identifiers, classifies new items, and writes Markdown files.
+## Install
 
-[Read the principles](https://victorvalentineromo.com/principles).
-
-## Worked example
+Requirements: Python 3.11 or later.
 
 ```bash
-export TWITTER_BEARER_TOKEN="your-current-X-web-client-bearer-token"
-export BOOKMARK_WEBHOOK_URL="https://your-host.example/webhook/bookmarks" # only for --notify
-./twitter-bookmarks --dry-run
+gh repo clone b2bvic/twitter-bookmarks
+cd twitter-bookmarks
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
 ```
 
-`TWITTER_BEARER_TOKEN` is required because X's web GraphQL endpoint expects the
-current public web-client bearer value alongside your authenticated Chrome
-cookies. The token is runtime configuration and is not stored in this
-repository.
+## Quick start
 
-`BOOKMARK_WEBHOOK_URL` is optional unless `--notify` is used. No personal host
-or endpoint is embedded in the script.
+```bash
+.venv/bin/python twitter-bookmarks --help
+.venv/bin/python -m pytest -q
+```
+
+## How it works
+
+- Read configured browser cookie storage on macOS when capture is requested.
+- Fetch bookmark records through the configured X web API endpoint.
+- Write Markdown and track seen identifiers; optionally call a configured webhook.
+
+## Limits
+
+- Capture depends on browser storage, Keychain access, and an unstable web API.
+- Dry-run still authenticates and fetches bookmarks.
+- Classification scores are keyword heuristics.
+- Protect output files and credentials separately.
+
+## Related repositories
+
+- [web2md](https://github.com/b2bvic/web2md)
+- [sws-skills](https://github.com/b2bvic/sws-skills)
+
+## Development
+
+```bash
+.venv/bin/python -m pytest -q
+.venv/bin/python -m ruff check --select E9,F63,F7,F82 twitter-bookmarks tests
+```
+
+CI runs the portable tests and checks syntax-related Python lint rules.
 
 ## License
 
-MIT.
-
-## How this was built
-
-This 2026 README refit used model assistance.
-
-No claim is made about how the underlying code was authored or reviewed.
+MIT. See [LICENSE](LICENSE).
