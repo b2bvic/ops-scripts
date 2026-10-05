@@ -1,6 +1,6 @@
 # Telegram notification shell script: tg-notify
 
-Tg-notify sends Telegram bot messages for system operators. Use its formatting retry to handle an API rejection of a Markdown message.
+`tg-notify` sends Telegram bot messages for system operators. Use its formatting retry to handle an API rejection of a Markdown message.
 
 [Project page](https://scalewithsearch.com/code/tg-notify)
 
@@ -22,6 +22,15 @@ python3 -m venv .venv
 ```
 
 These checks use synthetic input and perform no live sends.
+
+## Usage
+
+```bash
+export TELEGRAM_BOT_TOKEN="<bot-token>"
+./tg-notify "<chat-id>" "Build complete."
+```
+
+This command sends a live message.
 
 ## How it works
 
