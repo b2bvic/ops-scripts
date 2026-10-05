@@ -1,25 +1,55 @@
-# tg-notify
+# Telegram notification shell script: tg-notify
 
-A shell notification sender with a plain-text retry path.
+Tg-notify sends Telegram bot messages for system operators. Use its formatting retry to handle an API rejection of a Markdown message.
 
-## Principle cluster
+[Project page](https://scalewithsearch.com/code/tg-notify)
 
-This repository demonstrates **P10 (production means persistence, bounded autonomy, and observability)** because it encodes message text as JSON and retries without formatting when the first response is rejected.
+## Install
 
-[Read the principles](https://victorvalentineromo.com/principles).
-
-## Worked example
+Requirements: Python 3.11 or later.
 
 ```bash
-./tg-notify "recipient" "Build complete."
+gh repo clone b2bvic/tg-notify
+cd tg-notify
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
 ```
+
+## Quick start
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
+These checks use synthetic input and perform no live sends.
+
+## How it works
+
+- JSON-encode message text before sending it.
+- Retry without a parse mode after an API rejection.
+- Log rejected attempts and return failure when both API responses are rejected.
+
+## Limits
+
+- Invocation sends a live message when credentials are available.
+- A retry does not guarantee delivery.
+- Transport failures can exit before the formatting retry.
+- Logs can contain message text and API response details.
+
+## Related repositories
+
+- [watchdog](https://github.com/b2bvic/watchdog)
+- [social-poster](https://github.com/b2bvic/social-poster)
+
+## Development
+
+```bash
+.venv/bin/python -m pytest -q
+.venv/bin/python -m ruff check --select E9,F63,F7,F82 tests
+```
+
+CI runs the portable tests and checks syntax-related Python lint rules.
 
 ## License
 
-MIT.
-
-## How this was built
-
-This 2026 README refit used model assistance.
-
-No claim is made about how the underlying code was authored or reviewed.
+MIT. See [LICENSE](LICENSE).
