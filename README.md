@@ -1,27 +1,55 @@
-# watchdog
+# Linux host health checker: watchdog
 
-A shell health checker that records system conditions and emits remote alerts.
+Watchdog inspects Linux host health for system operators. Use configured timer and disk checks to identify conditions that need review.
 
-## Principle cluster
+[Project page](https://scalewithsearch.com/code/watchdog)
 
-This repository demonstrates **P10 (production means persistence, bounded autonomy, and observability)** because it reads a configured check list, reports missing entries, and evaluates disk usage.
+## Install
 
-[Read the principles](https://victorvalentineromo.com/principles).
-
-## Worked example
+Requirements: Python 3.11 or later.
 
 ```bash
-WATCHDOG_TIMERS=~/.config/watchdog/timers.txt ./watchdog
+gh repo clone b2bvic/watchdog
+cd watchdog
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
 ```
 
-The expected-timer list comes from `WATCHDOG_TIMERS` (default `~/.config/watchdog/timers.txt`). The script requires the two Telegram credential variables it names in its header and posts alerts through them.
+## Quick start
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
+These checks use synthetic input and perform no live sends.
+
+## How it works
+
+- Check configured user-systemd timers and failed services.
+- Compare root filesystem usage with a configured threshold.
+- Send Telegram alerts with caller-supplied credentials.
+
+## Limits
+
+- A run can send alerts and write logs.
+- Tests replace host commands and HTTP calls with fixtures.
+- The optional authentication probe classifies specific error text rather than proving complete service health.
+- The timer file uses WATCHDOG_TIMERS; the documented legacy --config argument is not implemented.
+
+## Related repositories
+
+- [tg-notify](https://github.com/b2bvic/tg-notify)
+- [social-poster](https://github.com/b2bvic/social-poster)
+
+## Development
+
+```bash
+.venv/bin/python -m pytest -q
+.venv/bin/python -m ruff check --select E9,F63,F7,F82 tests
+```
+
+CI runs the portable tests and checks syntax-related Python lint rules.
 
 ## License
 
-MIT.
-
-## How this was built
-
-This 2026 README refit used model assistance.
-
-No claim is made about how the underlying code was authored or reviewed.
+MIT. See [LICENSE](LICENSE).
