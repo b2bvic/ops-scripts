@@ -1,6 +1,6 @@
 # Linux host health checker: watchdog
 
-Watchdog inspects Linux host health for system operators. Use configured timer and disk checks to identify conditions that need review.
+`watchdog` inspects Linux host health for system operators. Use configured timer and disk checks to identify conditions that need review.
 
 [Project page](https://scalewithsearch.com/code/watchdog)
 
@@ -22,6 +22,18 @@ python3 -m venv .venv
 ```
 
 These checks use synthetic input and perform no live sends.
+
+## Usage
+
+Set the Telegram credentials before a run. List one expected timer name on each line of the timers file.
+
+```bash
+export TELEGRAM_BOT_TOKEN="<bot-token>"
+export TELEGRAM_CHAT_ID="<chat-id>"
+WATCHDOG_TIMERS=~/.config/watchdog/timers.txt ./watchdog
+```
+
+A run sends one Telegram alert for each issue it finds. Optional variables are `WATCHDOG_DISK_THRESHOLD` (default 80) and `SYNCTHING_API_KEY`.
 
 ## How it works
 
