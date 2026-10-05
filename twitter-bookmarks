@@ -499,8 +499,7 @@ def main():
         print("No ct0 (CSRF) token — log into x.com in Chrome.")
         sys.exit(1)
 
-    print(f"  auth_token: {'*' * 8}...{cookies['auth_token'][-4:]}")
-    print(f"  ct0: {cookies['ct0'][:8]}...")
+    print("  Authenticated cookies found.")
 
     # Step 2: Fetch bookmarks
     print(f"Fetching up to {args.limit} bookmarks...")
