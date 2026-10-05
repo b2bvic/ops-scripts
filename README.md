@@ -1,25 +1,56 @@
-# imessage-pull
+# MacOS iMessage history reader: imessage-pull
 
-A macOS command-line reader for extracting recent records from the local Messages database.
+Imessage-pull reads local message records for macOS users. Use a contact lookup to inspect recent Messages history without exporting the entire database.
 
-## Principle cluster
+[Project page](https://scalewithsearch.com/code/imessage-pull)
 
-This repository demonstrates **P02 (own the memory plane)** and **P04 (synthesis starts from sources)** because it queries the local SQLite store by contact identifier and returns a bounded result set.
+## Install
 
-[Read the principles](https://victorvalentineromo.com/principles).
-
-## Worked example
+Requirements: Python 3.11 or later.
 
 ```bash
-./imessage-pull 5551234567 20
+gh repo clone b2bvic/imessage-pull
+cd imessage-pull
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
 ```
+
+## Quick start
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
+These checks use synthetic input and perform no live sends.
+
+## How it works
+
+- Open the Messages SQLite database in read-only mode.
+- Bind the contact substring and positive message limit as SQL parameters.
+- Print plain text and heuristically recover attributed message bodies.
+
+## Limits
+
+- The terminal needs permission to read the Messages database.
+- Contact matching uses a literal substring rather than a resolved contact identity.
+- Attributed-body recovery can omit text or return attachment placeholders.
+- Output can contain private conversations.
+
+## Related repositories
+
+- [web2md](https://github.com/b2bvic/web2md)
+- [twitter-bookmarks](https://github.com/b2bvic/twitter-bookmarks)
+- [sws-skills](https://github.com/b2bvic/sws-skills)
+
+## Development
+
+```bash
+.venv/bin/python -m pytest -q
+.venv/bin/python -m ruff check --select E9,F63,F7,F82 tests
+```
+
+CI runs the portable tests and checks syntax-related Python lint rules.
 
 ## License
 
-MIT.
-
-## How this was built
-
-This 2026 README refit used model assistance.
-
-No claim is made about how the underlying code was authored or reviewed.
+MIT. See [LICENSE](LICENSE).
