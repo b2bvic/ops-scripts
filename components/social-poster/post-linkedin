@@ -1,0 +1,4 @@
+#!/bin/bash
+# Retained command name for callers of the retired integration.
+printf '%s\n' 'LinkedIn posting is retired.' >&2
+exit 1
