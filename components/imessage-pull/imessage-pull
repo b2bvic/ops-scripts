@@ -1,0 +1,99 @@
+#!/bin/bash
+# imessage-pull — Pull recent iMessages from a contact
+# 🌐 Victor Valentine Romo · victorvalentineromo.com · scalewithsearch.com
+#
+# Usage: imessage-pull <phone_number> [num_messages]
+# Example: imessage-pull 5551234567 20
+#
+# Requires macOS. Terminal/iTerm2 needs Full Disk Access in
+# System Settings → Privacy & Security → Full Disk Access.
+# Handles NSArchiver-encoded attributedBody blobs (rich text messages).
+
+PHONE="${1:?Usage: imessage-pull <phone_number> [num_messages]}"
+LIMIT="${2:-20}"
+DB="$HOME/Library/Messages/chat.db"
+
+if [ ! -f "$DB" ]; then
+  echo "❌ Messages database not found at $DB"
+  exit 1
+fi
+
+python3 - "$DB" "$PHONE" "$LIMIT" <<'PYEOF'
+import sqlite3, re, sys
+from pathlib import Path
+
+path, phone, limit_text = sys.argv[1:]
+if not limit_text.isdecimal() or int(limit_text) < 1:
+    print("Message limit must be a positive integer", file=sys.stderr)
+    sys.exit(1)
+limit = int(limit_text)
+contact = phone.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+db = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
+cursor = db.cursor()
+cursor.execute("""
+    SELECT m.text, m.attributedBody,
+           datetime(m.date/1000000000 + 978307200, 'unixepoch', 'localtime') as date,
+           m.is_from_me
+    FROM message m
+    JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
+    JOIN chat c ON cmj.chat_id = c.ROWID
+    WHERE c.chat_identifier LIKE ? ESCAPE '\\'
+    ORDER BY m.date DESC
+    LIMIT ?
+""", (f"%{contact}%", limit))
+
+rows = cursor.fetchall()
+if not rows:
+    print(f"No messages found for {phone}")
+    sys.exit(0)
+
+messages = []
+for text, abody, date, is_from_me in rows:
+    sender = "You" if is_from_me else "Them"
+    msg = ""
+
+    if text:
+        msg = text
+    elif abody:
+        try:
+            # NSArchiver blob — extract readable text after NSString marker
+            decoded = abody.decode('latin-1')
+            # Find the text payload between NSString length marker and the trailing metadata
+            # Pattern: single byte (length) followed by the actual message text
+            runs = re.findall(r'[\x20-\x7e\U00010000-\U0010ffff]{4,}',
+                            abody.decode('utf-8', errors='replace'))
+            # Filter out NSArchiver class names
+            ns_noise = {'NSMutableAttributedString', 'NSAttributedString', 'NSObject',
+                       'NSMutableString', 'NSString', 'NSDictionary', 'NSNumber', 'NSValue',
+                       'NSData', 'NSArray', 'DDScannerResult'}
+            clean = [r for r in runs if not any(n in r for n in ns_noise)
+                     and not r.startswith('__kIM') and not r.startswith('at_')
+                     and not r.startswith('iI') and '[' not in r[:3]
+                     and r not in ('streamtyped',)]
+            if clean:
+                # Longest clean run is usually the message
+                msg = max(clean, key=len).strip()
+                # Remove leading length/control chars: +, digits, non-alpha prefixes
+                msg = re.sub(r'^[^a-zA-Z\U00010000-\U0010ffff"\'(]+', '', msg)
+                # Remove trailing NSArchiver noise
+                msg = re.sub(r'\s*\x86.*$', '', msg)
+                msg = re.sub(r'\s*iI.*$', '', msg)
+                if not msg:
+                    msg = "[attachment]"
+            else:
+                msg = "[attachment]"
+        except:
+            msg = "[attachment]"
+    else:
+        msg = "[empty/reaction]"
+
+    messages.append((date, sender, msg))
+
+# Print oldest first
+messages.reverse()
+print(f"--- Messages with {phone} (last {limit}) ---\n")
+for date, sender, msg in messages:
+    print(f"{date} | {sender}: {msg}")
+
+db.close()
+PYEOF
