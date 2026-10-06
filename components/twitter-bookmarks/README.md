@@ -2,15 +2,15 @@
 
 `twitter-bookmarks` imports saved X posts for researchers and content teams. Use classified Markdown records to retain social research in files you control.
 
-[Project page](https://scalewithsearch.com/code/twitter-bookmarks)
+[Project page](https://scalewithsearch.com/code/ops-scripts#twitter-bookmarks)
 
 ## Install
 
 Requirements: Python 3.11 or later.
 
 ```bash
-gh repo clone b2bvic/twitter-bookmarks
-cd twitter-bookmarks
+gh repo clone b2bvic/ops-scripts
+cd ops-scripts/components/twitter-bookmarks
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements-dev.txt
 ```
@@ -52,3 +52,9 @@ CI runs the portable tests and checks syntax-related Python lint rules.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Model assistance
+
+This 2026 README refit used model assistance.
+
+No claim is made about how the underlying code was authored or reviewed.

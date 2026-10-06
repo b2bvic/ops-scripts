@@ -2,15 +2,15 @@
 
 `tg-notify` sends Telegram bot messages for system operators. Use its formatting retry to handle an API rejection of a Markdown message.
 
-[Project page](https://scalewithsearch.com/code/tg-notify)
+[Project page](https://scalewithsearch.com/code/ops-scripts#tg-notify)
 
 ## Install
 
 Requirements: Python 3.11 or later.
 
 ```bash
-gh repo clone b2bvic/tg-notify
-cd tg-notify
+gh repo clone b2bvic/ops-scripts
+cd ops-scripts/components/tg-notify
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements-dev.txt
 ```
@@ -62,3 +62,9 @@ CI runs the portable tests and checks syntax-related Python lint rules.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Model assistance
+
+This 2026 README refit used model assistance.
+
+No claim is made about how the underlying code was authored or reviewed.

@@ -2,15 +2,15 @@
 
 `watchdog` inspects Linux host health for system operators. Use configured timer and disk checks to identify conditions that need review.
 
-[Project page](https://scalewithsearch.com/code/watchdog)
+[Project page](https://scalewithsearch.com/code/ops-scripts#watchdog)
 
 ## Install
 
 Requirements: Python 3.11 or later.
 
 ```bash
-gh repo clone b2bvic/watchdog
-cd watchdog
+gh repo clone b2bvic/ops-scripts
+cd ops-scripts/components/watchdog
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements-dev.txt
 ```
@@ -65,3 +65,9 @@ CI runs the portable tests and checks syntax-related Python lint rules.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Model assistance
+
+This 2026 README refit used model assistance.
+
+No claim is made about how the underlying code was authored or reviewed.
