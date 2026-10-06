@@ -1,0 +1,63 @@
+#!/bin/bash
+# tg-notify — Self-healing Telegram notification sender
+# 🌐 Victor Valentine Romo · victorvalentineromo.com · scalewithsearch.com
+#
+# Usage: tg-notify <chat_id> <message>
+#
+# Self-healing: tries Markdown first, falls back to plain text if
+# Telegram's parser rejects the message (unmatched *, _, etc).
+# Logs all failures to ~/logs/tg-notify.log instead of swallowing them.
+#
+# Set TELEGRAM_BOT_TOKEN env var or source from ~/.env.automation
+
+set -euo pipefail
+
+CHAT_ID="${1:?Usage: tg-notify.sh <chat_id> <message>}"
+MESSAGE="${2:?Usage: tg-notify.sh <chat_id> <message>}"
+
+# Load token from env file if not already set
+if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
+  ENV_FILE="$HOME/.env.automation"
+  if [ -f "$ENV_FILE" ]; then
+    # shellcheck source=/dev/null
+    source "$ENV_FILE"
+  fi
+fi
+
+if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
+  echo "[$(date)] ERROR: TELEGRAM_BOT_TOKEN not set" >&2
+  exit 1
+fi
+
+LOG="$HOME/logs/tg-notify.log"
+mkdir -p "$(dirname "$LOG")"
+
+# JSON-encode the message text (handles newlines, quotes, emoji correctly)
+JSON_TEXT=$(printf '%s' "$MESSAGE" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
+
+API_URL="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
+
+# Attempt 1: Markdown parse mode (preserves *bold*, _italic_)
+RESPONSE=$(curl -s -X POST "$API_URL" \
+  -H "Content-Type: application/json" \
+  -d "{\"chat_id\": \"${CHAT_ID}\", \"text\": ${JSON_TEXT}, \"parse_mode\": \"Markdown\"}")
+
+# Inspect Telegram's response — {"ok":true,...} means delivered
+if printf '%s' "$RESPONSE" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("ok") else 1)' 2>/dev/null; then
+  exit 0
+fi
+
+# Attempt 2: plain text (strips formatting but guarantees delivery)
+echo "[$(date)] Markdown rejected for chat=$CHAT_ID — falling back to plain text. Preview: ${MESSAGE:0:80}" >> "$LOG"
+
+RESPONSE=$(curl -s -X POST "$API_URL" \
+  -H "Content-Type: application/json" \
+  -d "{\"chat_id\": \"${CHAT_ID}\", \"text\": ${JSON_TEXT}}")
+
+if printf '%s' "$RESPONSE" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("ok") else 1)' 2>/dev/null; then
+  exit 0
+fi
+
+# Both attempts failed — log the full API response for debugging
+echo "[$(date)] DELIVERY FAILED chat=$CHAT_ID preview=${MESSAGE:0:120} api_response=${RESPONSE:0:300}" >> "$LOG"
+exit 1
