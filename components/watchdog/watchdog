@@ -1,0 +1,151 @@
+#!/bin/bash
+# watchdog — VPS health monitor with Telegram alerts
+# 🌐 Victor Valentine Romo · victorvalentineromo.com · scalewithsearch.com
+#
+# Checks: systemd timers, failed services, disk usage, Syncthing peers,
+# Claude Code auth. Alerts via Telegram on any issues.
+#
+# Usage: watchdog [--config timers.txt]
+# Run hourly via systemd timer or cron.
+#
+# Config via environment:
+#   TELEGRAM_BOT_TOKEN  — Bot token for alerts
+#   TELEGRAM_CHAT_ID    — Chat ID to send alerts to
+#   WATCHDOG_DISK_THRESHOLD — Disk % alert threshold (default: 80)
+#   SYNCTHING_API_KEY   — Syncthing REST API key (optional)
+
+set -euo pipefail
+
+# Source env file if it exists
+[ -f "$HOME/.env.automation" ] && source "$HOME/.env.automation"
+
+CHAT_ID="${TELEGRAM_CHAT_ID:-}"
+THRESHOLD_DISK="${WATCHDOG_DISK_THRESHOLD:-80}"
+LOG="$HOME/logs/watchdog.log"
+TIMER_FILE="${1:---config}"
+
+# Check for required env
+if [ -z "$CHAT_ID" ] || [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
+  echo "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID" >&2
+  exit 1
+fi
+
+mkdir -p "$(dirname "$LOG")"
+echo "[$(date)] watchdog run" >> "$LOG"
+
+# ─── Notification helper ────────────────────────────────
+
+notify() {
+  local msg="$1"
+  local json_text
+  json_text=$(printf '%s' "$msg" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
+  local resp
+  resp=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+    -H "Content-Type: application/json" \
+    -d "{\"chat_id\": \"${CHAT_ID}\", \"text\": ${json_text}, \"parse_mode\": \"Markdown\"}" 2>/dev/null)
+
+  # Fallback to plain text if Markdown rejected
+  if ! printf '%s' "$resp" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("ok") else 1)' 2>/dev/null; then
+    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+      -H "Content-Type: application/json" \
+      -d "{\"chat_id\": \"${CHAT_ID}\", \"text\": ${json_text}}" >/dev/null 2>&1
+  fi
+}
+
+# ─── Timer Health ────────────────────────────────────────
+
+# Load expected timers from config file or use defaults
+EXPECTED_TIMERS=()
+CONFIG_FILE="${WATCHDOG_TIMERS:-$HOME/.config/watchdog/timers.txt}"
+
+if [ -f "$CONFIG_FILE" ]; then
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    [[ "$line" =~ ^# ]] && continue
+    EXPECTED_TIMERS+=("$line")
+  done < "$CONFIG_FILE"
+fi
+
+if [ ${#EXPECTED_TIMERS[@]} -gt 0 ]; then
+  TIMER_OUTPUT=$(systemctl --user list-timers --no-pager 2>&1)
+  MISSING=()
+
+  for timer in "${EXPECTED_TIMERS[@]}"; do
+    if ! echo "$TIMER_OUTPUT" | grep -q "${timer}"; then
+      MISSING+=("$timer")
+    fi
+  done
+
+  if [ ${#MISSING[@]} -gt 0 ]; then
+    notify "⚠️ *VPS:* ${#MISSING[@]} timer(s) missing: ${MISSING[*]}"
+    echo "[$(date)] ALERT: missing timers: ${MISSING[*]}" >> "$LOG"
+  fi
+fi
+
+# ─── Failed Services ────────────────────────────────────
+
+FAILED_COUNT=$(systemctl --user --failed --no-pager --no-legend 2>/dev/null | wc -l)
+if [ "$FAILED_COUNT" -gt 0 ]; then
+  notify "⚠️ *VPS:* ${FAILED_COUNT} service(s) in failed state."
+  echo "[$(date)] ALERT: $FAILED_COUNT failed services" >> "$LOG"
+fi
+
+# ─── Disk Usage ──────────────────────────────────────────
+
+DISK_PCT=$(df / | tail -1 | awk '{print $5}' | tr -d '%')
+if [ "$DISK_PCT" -ge "$THRESHOLD_DISK" ]; then
+  notify "⚠️ *VPS disk ${DISK_PCT}% full.* Old logs need clearing."
+  echo "[$(date)] ALERT: disk at ${DISK_PCT}%" >> "$LOG"
+fi
+
+# ─── Syncthing Peer ─────────────────────────────────────
+
+if [ -n "${SYNCTHING_API_KEY:-}" ] && command -v curl &>/dev/null; then
+  SYNC_STATUS=$(curl -s -H "X-API-Key: ${SYNCTHING_API_KEY}" \
+    "http://127.0.0.1:8384/rest/system/connections" 2>/dev/null || echo "")
+
+  if [ -n "$SYNC_STATUS" ]; then
+    CONNECTED=$(echo "$SYNC_STATUS" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    conns = data.get('connections', {})
+    connected = sum(1 for v in conns.values() if v.get('connected'))
+    print(connected)
+except:
+    print(-1)
+" 2>/dev/null || echo "-1")
+
+    if [ "$CONNECTED" = "0" ]; then
+      PEER_FILE="$HOME/.cache/syncthing-peer-state"
+      if [ -f "$PEER_FILE" ]; then
+        LAST_SEEN=$(cat "$PEER_FILE")
+        NOW=$(date +%s)
+        DIFF=$(( NOW - LAST_SEEN ))
+        if [ "$DIFF" -gt 3600 ]; then
+          notify "⚠️ *Vault sync:* Peer hasn't connected in over an hour."
+          echo "[$(date)] ALERT: syncthing peer down >1hr" >> "$LOG"
+        fi
+      else
+        date +%s > "$PEER_FILE"
+      fi
+    else
+      mkdir -p "$HOME/.cache"
+      date +%s > "$HOME/.cache/syncthing-peer-state"
+    fi
+  fi
+fi
+
+# ─── Claude Auth Health ────────────────────────────────
+
+if command -v claude &>/dev/null; then
+  CLAUDE_TEST=$(echo "ping" | timeout 15 claude -p 2>&1 || true)
+  if echo "$CLAUDE_TEST" | grep -qi "expired\|authentication_error\|401"; then
+    notify "🔴 *Claude auth expired on VPS.* Token refresh needed."
+    echo "[$(date)] ALERT: Claude auth expired" >> "$LOG"
+  else
+    echo "[$(date)] Claude auth OK" >> "$LOG"
+  fi
+fi
+
+echo "[$(date)] watchdog complete — disk ${DISK_PCT}%" >> "$LOG"
