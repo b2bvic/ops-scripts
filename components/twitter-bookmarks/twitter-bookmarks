@@ -1,0 +1,578 @@
+#!/usr/bin/env python3
+"""
+twitter-bookmarks — Automated Twitter/X bookmark capture + classification
+
+Reads Chrome cookies directly (no Keychain popup), polls the Bookmarks
+GraphQL API, diffs against seen IDs, classifies new bookmarks by domain,
+writes markdown files.
+
+Usage:
+    twitter-bookmarks [--limit N] [--dry-run] [--output DIR]
+
+Requires: cryptography, requests
+
+🌐 Victor Valentine Romo · victorvalentineromo.com · scalewithsearch.com
+"""
+
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+import shutil
+import tempfile
+from datetime import datetime
+from hashlib import pbkdf2_hmac
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+OUTPUT_DIR = Path(os.environ.get("BOOKMARKS_OUTPUT", str(Path.home() / "twitter-bookmarks")))
+CACHE_DIR = Path.home() / ".cache" / "twitter-bookmarks"
+SEEN_FILE = CACHE_DIR / "seen_ids.json"
+COOKIES_DB = Path.home() / "Library" / "Application Support" / "Google" / "Chrome" / "Default" / "Cookies"
+
+GRAPHQL_HASH = "VFdMm9iVZxlU6hD86gfW_A"
+X_BEARER_TOKEN = os.environ.get("TWITTER_BEARER_TOKEN", "").strip()
+BOOKMARK_WEBHOOK_URL = os.environ.get("BOOKMARK_WEBHOOK_URL", "").strip()
+FEATURES = {
+    "rweb_video_screen_enabled": False,
+    "profile_label_improvements_pcf_label_in_post_enabled": True,
+    "responsive_web_profile_redirect_enabled": False,
+    "rweb_tipjar_consumption_enabled": False,
+    "verified_phone_label_enabled": False,
+    "creator_subscriptions_tweet_preview_api_enabled": True,
+    "responsive_web_graphql_timeline_navigation_enabled": True,
+    "responsive_web_graphql_skip_user_profile_image_extensions_enabled": False,
+    "premium_content_api_read_enabled": False,
+    "communities_web_enable_tweet_community_results_fetch": True,
+    "c9s_tweet_anatomy_moderator_badge_enabled": True,
+    "responsive_web_grok_analyze_button_fetch_trends_enabled": False,
+    "responsive_web_grok_analyze_post_followups_enabled": True,
+    "responsive_web_jetfuel_frame": True,
+    "responsive_web_grok_share_attachment_enabled": True,
+    "responsive_web_grok_annotations_enabled": True,
+    "articles_preview_enabled": True,
+    "responsive_web_edit_tweet_api_enabled": True,
+    "graphql_is_translatable_rweb_tweet_is_translatable_enabled": True,
+    "view_counts_everywhere_api_enabled": True,
+    "longform_notetweets_consumption_enabled": True,
+    "responsive_web_twitter_article_tweet_consumption_enabled": True,
+    "tweet_awards_web_tipping_enabled": False,
+    "content_disclosure_indicator_enabled": True,
+    "content_disclosure_ai_generated_indicator_enabled": True,
+    "responsive_web_grok_show_grok_translated_post": True,
+    "responsive_web_grok_analysis_button_from_backend": True,
+    "post_ctas_fetch_enabled": True,
+    "freedom_of_speech_not_reach_fetch_enabled": True,
+    "standardized_nudges_misinfo": True,
+    "tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": True,
+    "longform_notetweets_rich_text_read_enabled": True,
+    "longform_notetweets_inline_media_enabled": True,
+    "responsive_web_grok_image_annotation_enabled": True,
+    "responsive_web_grok_imagine_annotation_enabled": True,
+    "responsive_web_grok_community_note_auto_translation_is_enabled": False,
+    "responsive_web_enhance_cards_enabled": False,
+}
+
+# Domain classification keywords
+# Domain classification — customize to your interests
+# Bookmarks are classified by matching tweet text against these keywords
+DOMAIN_KEYWORDS = {
+    "tech": [
+        "claude", "anthropic", "openai", "gpt", "llm", "ai agent", "mcp",
+        "prompt engineering", "rag", "vector", "embedding",
+        "automation", "python", "javascript", "typescript",
+        "open source", "github", "api", "sdk",
+    ],
+    "marketing": [
+        "seo", "content", "marketing", "google ads", "meta ads",
+        "landing page", "conversion", "copywriting", "outreach",
+        "lead gen", "saas", "agency",
+    ],
+    "personal": [
+        "productivity", "habit", "finance", "investing", "health",
+        "mindset", "learning", "education", "mastery",
+    ],
+}
+
+# Override with custom domains file if it exists
+_domains_file = Path.home() / ".config" / "twitter-bookmarks" / "domains.json"
+if _domains_file.exists():
+    try:
+        DOMAIN_KEYWORDS = json.loads(_domains_file.read_text())
+    except (json.JSONDecodeError, KeyError):
+        pass
+
+# ---------------------------------------------------------------------------
+# Chrome cookie decryption (macOS)
+# ---------------------------------------------------------------------------
+
+def get_chrome_key():
+    """Read Chrome Safe Storage key from Keychain, derive AES key."""
+    raw = subprocess.check_output([
+        "security", "find-generic-password",
+        "-s", "Chrome Safe Storage", "-w"
+    ]).strip()
+    return pbkdf2_hmac("sha1", raw, b"saltysalt", 1003, dklen=16)
+
+
+def decrypt_cookie(encrypted_value, key):
+    """Decrypt a Chrome cookie value (AES-128-CBC, 'v10' prefix on macOS).
+
+    Chrome prepends a 32-byte header (hash/nonce) to the plaintext before
+    encrypting. After AES-CBC decryption and padding removal, skip the
+    first 32 bytes to get the actual cookie value.
+    """
+    if not encrypted_value or len(encrypted_value) <= 3:
+        return ""
+    # v10 prefix = macOS Chrome encryption
+    if encrypted_value[:3] != b"v10":
+        return encrypted_value.decode("utf-8", errors="replace")
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    from cryptography.hazmat.backends import default_backend
+    iv = b" " * 16
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+    decryptor = cipher.decryptor()
+    decrypted = decryptor.update(encrypted_value[3:]) + decryptor.finalize()
+    # Remove PKCS7 padding
+    pad_len = decrypted[-1]
+    if isinstance(pad_len, int) and 1 <= pad_len <= 16:
+        decrypted = decrypted[:-pad_len]
+    # Skip 32-byte Chrome header (hash/nonce prepended before encryption)
+    return decrypted[32:].decode("ascii", errors="replace")
+
+
+def get_twitter_cookies():
+    """Extract auth_token and ct0 from Chrome's cookie database."""
+    key = get_chrome_key()
+
+    # Copy DB to temp file (Chrome locks it)
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
+    tmp.close()
+    shutil.copy2(str(COOKIES_DB), tmp.name)
+
+    try:
+        conn = sqlite3.connect(tmp.name)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT name, encrypted_value FROM cookies "
+            "WHERE host_key LIKE '%x.com' AND name IN ('auth_token', 'ct0')"
+        )
+        cookies = {}
+        for name, enc_val in cursor.fetchall():
+            cookies[name] = decrypt_cookie(enc_val, key)
+        conn.close()
+    finally:
+        os.unlink(tmp.name)
+
+    if "auth_token" not in cookies or "ct0" not in cookies:
+        # Try .twitter.com as fallback
+        tmp2 = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
+        tmp2.close()
+        shutil.copy2(str(COOKIES_DB), tmp2.name)
+        try:
+            conn = sqlite3.connect(tmp2.name)
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT name, encrypted_value FROM cookies "
+                "WHERE host_key LIKE '%twitter.com' AND name IN ('auth_token', 'ct0')"
+            )
+            for name, enc_val in cursor.fetchall():
+                if name not in cookies:
+                    cookies[name] = decrypt_cookie(enc_val, key)
+            conn.close()
+        finally:
+            os.unlink(tmp2.name)
+
+    return cookies
+
+
+# ---------------------------------------------------------------------------
+# Twitter Bookmarks API
+# ---------------------------------------------------------------------------
+
+def fetch_bookmarks(cookies, limit=50):
+    """Fetch bookmarks via GraphQL API. Returns list of tweet dicts."""
+    import requests
+
+    if not X_BEARER_TOKEN:
+        raise RuntimeError(
+            "TWITTER_BEARER_TOKEN is required; provide it through the environment"
+        )
+
+    headers = {
+        "authorization": f"Bearer {X_BEARER_TOKEN}",
+        "x-csrf-token": cookies["ct0"],
+        "x-twitter-active-user": "yes",
+        "x-twitter-auth-type": "OAuth2Session",
+        "x-twitter-client-language": "en",
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+        "referer": "https://x.com/i/bookmarks",
+        "accept": "*/*",
+        "accept-language": "en-US,en;q=0.9",
+        "cookie": f"auth_token={cookies['auth_token']}; ct0={cookies['ct0']}",
+    }
+
+    all_tweets = []
+    cursor = None
+
+    for page in range(max(1, limit // 20 + 1)):
+        if len(all_tweets) >= limit:
+            break
+
+        variables = {"count": 20, "includePromotedContent": False}
+        if cursor:
+            variables["cursor"] = cursor
+
+        # Compact JSON (no spaces) — Twitter's GraphQL 404s on spaced JSON
+        vars_str = json.dumps(variables, separators=(",", ":"))
+        feat_str = json.dumps(FEATURES, separators=(",", ":"))
+
+        from urllib.parse import quote
+        url = (
+            f"https://x.com/i/api/graphql/{GRAPHQL_HASH}/Bookmarks"
+            f"?variables={quote(vars_str)}&features={quote(feat_str)}"
+        )
+        resp = requests.get(url, headers=headers, timeout=30)
+
+        if resp.status_code == 401 or resp.status_code == 403:
+            print(f"AUTH FAILED ({resp.status_code}) — log into x.com in Chrome to refresh session.")
+            return None
+
+        resp.raise_for_status()
+        data = resp.json()
+
+        instructions = data.get("data", {}).get("bookmark_timeline_v2", {}).get("timeline", {}).get("instructions", [])
+        entries = []
+        for inst in instructions:
+            entries.extend(inst.get("entries", []))
+
+        tweet_entries = [e for e in entries if e.get("entryId", "").startswith("tweet-")]
+        if not tweet_entries:
+            break
+
+        for e in tweet_entries:
+            result = (e.get("content", {}).get("itemContent", {})
+                       .get("tweet_results", {}).get("result", {}))
+            tw = result.get("tweet", result)
+            legacy = tw.get("legacy", {})
+            user_result = tw.get("core", {}).get("user_results", {}).get("result", {})
+            user_core = user_result.get("core", {})
+            user_legacy = user_result.get("legacy", {})
+            note_text = (tw.get("note_tweet", {}).get("note_tweet_results", {})
+                          .get("result", {}).get("text", ""))
+
+            all_tweets.append({
+                "id": legacy.get("id_str") or tw.get("rest_id", ""),
+                "text": note_text or legacy.get("full_text", ""),
+                "author": user_core.get("screen_name") or user_legacy.get("screen_name", ""),
+                "name": user_core.get("name") or user_legacy.get("name", ""),
+                "date": legacy.get("created_at", ""),
+                "likes": legacy.get("favorite_count", 0),
+                "retweets": legacy.get("retweet_count", 0),
+                "views": tw.get("views", {}).get("count", "0"),
+                "bookmarks": legacy.get("bookmark_count", 0),
+            })
+
+            if len(all_tweets) >= limit:
+                break
+
+        # Get pagination cursor
+        cursor_entry = next((e for e in entries if e.get("entryId", "").startswith("cursor-bottom")), None)
+        cursor = cursor_entry.get("content", {}).get("value") if cursor_entry else None
+        if not cursor:
+            break
+
+    return all_tweets
+
+
+# ---------------------------------------------------------------------------
+# Domain classification
+# ---------------------------------------------------------------------------
+
+def classify_bookmark(tweet):
+    """Classify a bookmark into domains with confidence scores."""
+    text = (tweet.get("text", "") + " " + tweet.get("author", "")).lower()
+    scores = {}
+    for domain, keywords in DOMAIN_KEYWORDS.items():
+        hits = sum(1 for kw in keywords if kw in text)
+        if hits > 0:
+            scores[domain] = min(hits / 3.0, 1.0)  # Normalize: 3 hits = 100%
+
+    if not scores:
+        scores["GENERAL"] = 0.5
+
+    primary = max(scores, key=scores.get)
+    return primary, scores
+
+
+def score_implementation(tweet):
+    """Score how actionable/implementable a bookmark is (0-1)."""
+    text = tweet.get("text", "").lower()
+    score = 0.0
+
+    # Tool/resource mentions
+    if any(w in text for w in ["github.com", "npm", "pip install", "repo", "open source"]):
+        score += 0.3
+    # How-to / tutorial signals
+    if any(w in text for w in ["how to", "step by step", "tutorial", "guide", "here's how"]):
+        score += 0.25
+    # Code/config signals
+    if any(w in text for w in ["npx", "curl", "api", "endpoint", "config", "setup"]):
+        score += 0.2
+    # High engagement suggests value
+    if tweet.get("bookmarks", 0) > 100:
+        score += 0.15
+    if tweet.get("likes", 0) > 1000:
+        score += 0.1
+
+    return min(score, 1.0)
+
+
+# ---------------------------------------------------------------------------
+# Markdown generation
+# ---------------------------------------------------------------------------
+
+def write_bookmarks_md(tweets, date_str, time_str):
+    """Write the vault markdown file."""
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    outfile = OUTPUT_DIR / f"{date_str} - Twitter Bookmarks.md"
+
+    lines = [
+        f"type:: bookmarks",
+        f"source:: twitter",
+        f"pulled:: {date_str}",
+        f"count:: {len(tweets)}",
+        f"last_pull:: {time_str}",
+        "",
+        "---",
+        "",
+        f"# Twitter Bookmarks — {date_str}",
+        "",
+        f"> {len(tweets)} bookmarks · last pulled {time_str}",
+        "",
+    ]
+
+    for t in tweets:
+        handle = t.get("author", "?")
+        text = t.get("text", "")
+        tid = t.get("id", "")
+        date = t.get("date", "")
+        likes = t.get("likes", 0)
+        rts = t.get("retweets", 0)
+        url = f"https://x.com/{handle}/status/{tid}" if tid else ""
+        domain, _ = classify_bookmark(t)
+        impl_score = score_implementation(t)
+
+        lines.append(f"## @{handle}")
+        lines.append("")
+        if text:
+            for line in text.split("\n"):
+                lines.append(f"> {line}")
+        lines.append("")
+        if url:
+            lines.append(f"🔗 [{url}]({url})")
+        if date:
+            lines.append(f"📅 {date}")
+        lines.append(f"❤️ {likes}  🔄 {rts}")
+        lines.append(f"🏷️ {domain}  ⚡ {'%.0f' % (impl_score * 100)}% actionable")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+    outfile.write_text("\n".join(lines))
+    return outfile
+
+
+def update_index(date_str):
+    """Add today's row to the index file."""
+    index_file = OUTPUT_DIR / "Twitter-Bookmarks-Index.md"
+    if not index_file.exists():
+        index_file.write_text(
+            f"type:: index\n"
+            f"domain:: bookmarks\n"
+            f"created:: {date_str}\n\n"
+            f"---\n\n"
+            f"# Twitter Bookmarks Index\n\n"
+            f"> Auto-pulled via twitter-bookmarks\n\n"
+            f"## Pulls\n\n"
+            f"| Date | File |\n"
+            f"|------|------|\n"
+            f"| {date_str} | [[{date_str} - Twitter Bookmarks]] |\n"
+        )
+    elif date_str not in index_file.read_text():
+        with open(index_file, "a") as f:
+            f.write(f"| {date_str} | [[{date_str} - Twitter Bookmarks]] |\n")
+
+
+# ---------------------------------------------------------------------------
+# Seen IDs (deduplication)
+# ---------------------------------------------------------------------------
+
+def load_seen():
+    if SEEN_FILE.exists():
+        return json.loads(SEEN_FILE.read_text())
+    return {"ids": [], "last_pull": ""}
+
+
+def save_seen(seen):
+    SEEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SEEN_FILE.write_text(json.dumps(seen, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Optional downstream webhook
+# ---------------------------------------------------------------------------
+
+def post_to_webhook(new_tweets):
+    """POST new bookmarks to the configured downstream webhook."""
+    if not new_tweets:
+        return True
+    if not BOOKMARK_WEBHOOK_URL:
+        print("BOOKMARK_WEBHOOK_URL is required when --notify is used.")
+        return False
+
+    import requests
+
+    payload = {
+        "bookmarks": [{
+            "author": t.get("author", ""),
+            "text": t.get("text", "")[:500],
+            "domain": t.get("_domain", "GENERAL"),
+            "impl_score": t.get("_impl_score", 0),
+            "likes": t.get("likes", 0),
+            "bookmarks": t.get("bookmarks", 0),
+            "id": t.get("id", ""),
+        } for t in new_tweets[:20]],
+        "date": datetime.now().strftime("%Y.%m.%d"),
+        "total_count": len(new_tweets),
+    }
+
+    try:
+        resp = requests.post(BOOKMARK_WEBHOOK_URL, json=payload, timeout=15)
+        if resp.status_code == 200:
+            print(f"✓ {len(new_tweets)} bookmarks posted to the configured webhook")
+            return True
+        else:
+            print(f"Bookmark webhook returned {resp.status_code}: {resp.text[:200]}")
+            return False
+    except Exception as e:
+        print(f"Bookmark webhook failed: {e}")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Twitter/X Bookmark Auto-Capture")
+    parser.add_argument("--limit", type=int, default=50, help="Max bookmarks to fetch")
+    parser.add_argument("--notify", action="store_true", help="Send Telegram notification for new bookmarks")
+    parser.add_argument("--dry-run", action="store_true", help="Show what would happen, don't write")
+    parser.add_argument("--full", action="store_true", help="Write all bookmarks (skip diff)")
+    args = parser.parse_args()
+
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    if not X_BEARER_TOKEN:
+        print("TWITTER_BEARER_TOKEN is required.")
+        sys.exit(1)
+
+    # Step 1: Get cookies
+    print("Reading Chrome cookies...")
+    try:
+        cookies = get_twitter_cookies()
+    except Exception as e:
+        print(f"Cookie extraction failed: {e}")
+        sys.exit(1)
+
+    if "auth_token" not in cookies or not cookies["auth_token"]:
+        print("No auth_token found — log into x.com in Chrome.")
+        sys.exit(1)
+
+    if "ct0" not in cookies or not cookies["ct0"]:
+        print("No ct0 (CSRF) token — log into x.com in Chrome.")
+        sys.exit(1)
+
+    print("  Authenticated cookies found.")
+
+    # Step 2: Fetch bookmarks
+    print(f"Fetching up to {args.limit} bookmarks...")
+    tweets = fetch_bookmarks(cookies, limit=args.limit)
+
+    if tweets is None:
+        sys.exit(1)
+
+    if not tweets:
+        print("No bookmarks found.")
+        sys.exit(0)
+
+    print(f"  Fetched {len(tweets)} bookmarks")
+
+    # Step 3: Diff against seen
+    seen = load_seen()
+    seen_set = set(seen["ids"])
+
+    if args.full:
+        new_tweets = tweets
+    else:
+        new_tweets = [t for t in tweets if t["id"] not in seen_set]
+
+    print(f"  {len(new_tweets)} new (unseen) bookmarks")
+
+    # Step 4: Classify
+    for t in new_tweets:
+        domain, scores = classify_bookmark(t)
+        impl = score_implementation(t)
+        t["_domain"] = domain
+        t["_impl_score"] = impl
+        t["_scores"] = scores
+
+    # Sort by implementation score
+    high_impl = [t for t in new_tweets if t["_impl_score"] >= 0.5]
+    if high_impl:
+        print(f"  ⚡ {len(high_impl)} high-implementation bookmarks:")
+        for t in high_impl[:5]:
+            print(f"    @{t['author']} ({t['_domain']}) — {t['text'][:80]}...")
+
+    if args.dry_run:
+        print("\n[DRY RUN] Would write markdown + update index + notify.")
+        return
+
+    # Step 5: Write markdown
+    now = datetime.now()
+    date_str = now.strftime("%Y.%m.%d")
+    time_str = now.strftime("%H:%M")
+
+    outfile = write_bookmarks_md(tweets, date_str, time_str)
+    print(f"✓ {len(tweets)} bookmarks → {outfile}")
+
+    update_index(date_str)
+    print("✓ Index updated")
+
+    # Step 6: Update seen IDs
+    new_ids = [t["id"] for t in tweets if t["id"]]
+    seen["ids"] = list(set(seen["ids"]) | set(new_ids))
+    # Keep only last 2000 IDs to prevent unbounded growth
+    if len(seen["ids"]) > 2000:
+        seen["ids"] = seen["ids"][-2000:]
+    seen["last_pull"] = now.isoformat()
+    save_seen(seen)
+
+    # Step 7: POST to the optional configured downstream webhook
+    if args.notify and new_tweets:
+        if not post_to_webhook(new_tweets):
+            sys.exit(1)
+    elif new_tweets:
+        print(f"\n{len(new_tweets)} new bookmarks (use --notify to POST to the configured webhook)")
+
+    print("Done.")
+
+
+if __name__ == "__main__":
+    main()
